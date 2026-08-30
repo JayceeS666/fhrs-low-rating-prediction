@@ -1,6 +1,6 @@
 # How I built out the coding scheme
 
-A log of the calls I made while putting `fhrs_pipeline.py` together — what I went with, what I tried and binned, and why. Writing it up so anyone who hasn't seen my working files can still follow what I did and check it if they want.
+Basically a log of the decisions I made building `fhrs_pipeline.py` — what I went with, what I tried and dropped, and why. Writing it up so someone who's never seen my working files can follow how I coded things and check my process if they want to.
 
 ---
 
@@ -8,63 +8,71 @@ A log of the calls I made while putting `fhrs_pipeline.py` together — what I w
 
 Went with: rating 0-3 = high risk, 4-5 = not.
 
-Tried a stricter cutoff first (0-2 only), but that only gave about 3% positive cases — way too thin for the models to actually learn from. 0-3 keeps enough signal to work with and still means something regulation-wise. Ran this by my supervisor before touching any models.
+Tried a stricter cutoff early on (0-2 only) but that only gave about 3% positive cases — too thin for the models to actually learn from. 0-3 keeps enough signal to work with and still means something in regulatory terms. Checked this with my supervisor before I started modelling anything.
 
-## 2. Sorting out what's actually England
+## 2. Working out what's actually England
 
-The raw FHRS file just dumps England, Wales, NI, and Scotland together — no country column at all. Had to use FSA's own regional groupings to build a list of English local authorities myself, then check it against what's actually in the data. Expected 298, got 297 matches — looked into the one that didn't show up (Newcastle upon Tyne), turned out it just had zero records in this file, not a naming mismatch.
+The raw FHRS file just dumps England, Wales, NI, and Scotland together — no country column, nothing. I used FSA's own regional groupings (East Counties, East Midlands, London, etc.) to build a list of English local authorities, then checked that against what's actually sitting in the data. Got 297 out of the ~298 I was expecting — looked into the one that didn't show up (Newcastle upon Tyne), turned out it just had zero records in this particular file, not a naming mismatch.
 
-That, plus only keeping `SchemeType == 'FHRS'` (drops Scotland's separate scheme), is the England filter I use everywhere.
+That plus only keeping `SchemeType == 'FHRS'` (drops Scotland's separate FHIS scheme) is the England filter I use everywhere.
 
-## 3. Why the FHRS sub-scores didn't make it in
+## 3. Why the FHRS sub-scores aren't in there
 
-The raw data hands you `Hygiene`, `Structural`, and `ConfidenceInManagement` — three ready-to-go numeric columns. Didn't touch them.
+The raw data hands you `Hygiene`, `Structural`, and `ConfidenceInManagement` — three ready-made numeric columns just sitting there. Didn't touch them.
 
-Why: these three literally get combined into the final rating. Using them as features is basically handing the model the answer along with the question. And realistically, at the point you'd actually want a prediction, none of them exist yet — the inspection hasn't happened.
+Reason: these three literally get combined to produce the final rating. Using them as features would be like handing the model the answer along with the question — and in practice none of them would even exist yet at the point you'd want to make a prediction, before the inspection has happened.
 
-## 4. Chopping down the time window
+## 4. Cutting down the time window
 
-Started with everything, back to 1998. My supervisor said old records probably don't say much about how things are now, so I cut it to the last 5 years before extraction. Just `RatingDate >= max(RatingDate) - 5 years`.
+Started with everything, going back to 1998. My supervisor pointed out old records probably don't say much about current conditions, so I cut it to the 5 years before extraction. Just `RatingDate >= max(RatingDate) - 5 years`.
 
 ## 5. Duplicates
 
-Same business name + same postcode twice = same place, listed twice. Keep whichever one's more recent, drop the rest.
+Same business name + same postcode showing up twice = same place listed twice. Keep whichever has the more recent rating date, drop the other.
 
-## 6. Deprivation data — went through three versions
+## 6. Deprivation data — tried three versions
 
-This is the one I flip-flopped on the most, so it's worth actually spelling out — the version I kept (the less precise one) isn't something you'd guess from just reading the code.
+This is the bit I went back and forth on the most, so it's worth actually explaining, because the version I kept (the less precise one) isn't something you'd guess just from reading the code.
 
 | Version | What it was | XGBoost AUC |
 |---|---|---|
 | v1 | No deprivation data | 0.774 |
-| v2 (**went with this**) | IMD25 score by local authority, matched on name (had to hand-fix ~30 naming mismatches — "Kingston upon Hull, City of" vs "Hull City", stuff like that) | **0.787** |
-| v3 | IMD25 at the much finer LSOA level — spatially matched each business's coordinates to ONS boundary polygons (worked for 77.9% of records, rest fell back to v2) | 0.776 |
+| v2 (**kept this one**) | IMD25 score at local authority level, matched by name (had to hand-fix about 30 naming mismatches — e.g. "Kingston upon Hull, City of" vs "Hull City") | **0.787** |
+| v3 | IMD25 at the much finer LSOA level — spatially matched each business's coordinates to ONS boundary polygons (worked for 77.9% of records, the rest fell back to v2) | 0.776 |
 
-Kept v2. Beat v3 on both tree-based models, even though it's the rougher option. Best guess: lat/long were already in the feature set in all three versions, so whatever extra detail LSOA data added, the model was probably already picking most of that up from the raw coordinates. And since the LSOA join only covered 77.9% of records, the gap likely added more noise than the precision was worth.
+Went with v2. It beat v3 on both tree-based models, even though it's the rougher option. Best guess as to why: lat/long were already in the feature set for all three versions, so whatever extra spatial detail LSOA data offered, the model could probably already pick most of it up from the raw coordinates anyway. And since the LSOA join only covered 77.9% of records, the gap probably introduced more noise than the finer detail was worth.
 
-(v3 used `geopandas.sjoin` against an ONS boundary file — didn't bother including that here since it's not needed for the version I actually kept.)
+(v3 used `geopandas.sjoin` against an ONS boundary file — didn't bother including that file here since it's not needed for the version I actually kept.)
 
-## 7. Handling the class imbalance
+## 7. Dealing with the class imbalance
 
-Used SMOTE, training data only — bumps the high-risk class up to 50/50. Left the test set completely alone so the numbers I report still reflect the real imbalance.
+Used SMOTE, only on the training data — bumps the high-risk class up to a 50/50 split. Left the test set exactly as it was so the numbers I report still reflect the real-world imbalance.
 
-Thought about just weighting the classes instead, but stuck with SMOTE to line up with Allen et al. (2019) and Oldroyd et al. (2021), my two closest comparisons.
+Thought about just weighting the classes instead, but stuck with SMOTE to match what Allen et al. (2019) and Oldroyd et al. (2021) did, since those are my two closest comparison points.
 
-## 8. One change that was just about getting it to run
+## 8. One change that was just practical, not methodological
 
-First attempt at Random Forest was 300 trees, no depth limit. Basically never finished on ~550K rows after SMOTE. Had to kill it.
+First try at Random Forest was 300 trees, no depth limit — this basically never finished running on the ~550K rows I had after SMOTE. Had to kill it.
 
-Capped it at depth 20, 150 trees — done in a few minutes, barely moved the numbers. Ran XGBoost with `tree_method='hist'` for the same reason, it's just faster at this scale.
+Capped it at `max_depth=20`, 150 trees instead — runs in a few minutes, barely moved the results. Ran XGBoost with `tree_method='hist'` for the same reason, it's just faster at this size.
 
-Not a methodology call, just "this needed to actually finish" — mentioning it because the settings in `fhrs_pipeline.py` are the fixed version, not what I started with.
+Not a methodology decision, just "this needed to actually finish running" — mentioning it because the settings in `fhrs_pipeline.py` are the fixed version, not what I started with.
 
-## 9. Picking a threshold
+## 9. How I picked the classification threshold
 
-Used Youden's J (the ROC point that best balances catching true positives vs false alarms) alongside the usual 0.5 cutoff. Picked this specifically because Allen et al. (2019) and Oldroyd et al. (2021) both used it too, so my numbers actually line up with theirs.
+Used Youden's J (the ROC point that best balances catching true positives against false alarms) on top of the usual 0.5 cutoff. Picked this specifically because it's what Allen et al. (2019) and Oldroyd et al. (2021) both used, so my numbers actually compare to theirs properly.
 
-## 10. A couple of mistakes I caught late
+## 10. Couple of mistakes I caught late and fixed
 
-Going back through the dissertation against what the code actually outputs, found two things that didn't match:
+While going back through the dissertation against what the code actually spits out, found two things that didn't match:
 
-- Said "298 local authorities" in one spot, "297" everywhere else — fixed to 297 throughout, since that's what's actually in the data (see #2).
-- The sample size (402,815) and test-set size (100,704) I'd written down were from *before* the deprivation merge — 8 records got dropped there for not matching a local authority. Fixed to the re
+- Said "298 local authorities" in one place and "297" everywhere else — fixed to 297 throughout, since that's what's actually in the data (see #2).
+- The sample size (402,815) and test-set size (100,704) I'd written down were from *before* the deprivation merge — 8 records got dropped at that step for not matching a local authority. Fixed to the real numbers: 402,807 and 100,702.
+
+Neither of these changed anything about how the data was actually coded — just fixed the write-up to match what the code does. Noting them here so the record's complete.
+
+---
+
+## If you want to check any of this
+
+Every AUC number in section 6 came from actually running that version against the exact data sitting in `data/` (README has the details on when that was pulled). `fhrs_pipeline.py` here is the v2 setup — I didn't keep separate scripts for v1 or v3 since only v2 ended up in the dissertation.
