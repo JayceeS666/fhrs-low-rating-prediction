@@ -94,6 +94,8 @@ def build_features(df):
 
 
 def report(name, y_true, prob, threshold=0.5):
+    # just prints AUC/precision/recall/F1 + the confusion matrix for one model,
+    # so train_models doesn't have to repeat this four times
     pred = (prob >= threshold).astype(int)
     print(f"{name} (threshold={threshold:.3f}): AUC={roc_auc_score(y_true, prob):.3f} "
           f"Precision={precision_score(y_true, pred):.3f} "
@@ -121,6 +123,7 @@ def train_models(X, y):
                                       tree_method="hist"), False),
     ]
 
+    # train all three the same way, just loop instead of copy-pasting this block 3x
     fitted, probs = {}, {}
     for name, model, scale in models:
         model.fit(scaler.transform(X_tr) if scale else X_tr, y_tr)
@@ -138,6 +141,7 @@ def train_models(X, y):
 
 
 def run_shap(model, X_te, n=5000):
+    # 5000 rows is plenty to get a stable picture without SHAP taking forever
     sample = X_te.sample(n=min(n, len(X_te)), random_state=SEED)
     values = shap.TreeExplainer(model).shap_values(sample)
     importance = pd.Series(np.abs(values).mean(axis=0),
@@ -148,6 +152,7 @@ def run_shap(model, X_te, n=5000):
 
 
 def make_plots(probs, y_te, best, shap_values, shap_sample):
+    # plot 1: ROC curves for all three models on the same axes
     plt.figure(figsize=(6.5, 6.5))
     for name, prob in probs.items():
         fpr, tpr, _ = roc_curve(y_te, prob)
@@ -161,6 +166,7 @@ def make_plots(probs, y_te, best, shap_values, shap_sample):
     plt.savefig("roc_curves.png", dpi=150)
     plt.close()
 
+    # plot 2: XGBoost confusion matrix at default vs Youden's J threshold, side by side
     _, axes = plt.subplots(1, 2, figsize=(11, 5))
     for ax, cut, title in [(axes[0], 0.5, "Default threshold (0.5)"),
                            (axes[1], best, f"Youden's J threshold ({best:.3f})")]:
@@ -176,6 +182,7 @@ def make_plots(probs, y_te, best, shap_values, shap_sample):
     plt.savefig("confusion_matrices.png", dpi=150)
     plt.close()
 
+    # plot 3: SHAP summary — which features actually drove the predictions
     plt.figure()
     shap.summary_plot(shap_values, shap_sample, max_display=15, show=False)
     plt.tight_layout()
