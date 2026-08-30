@@ -1,11 +1,10 @@
 """
 Predicts which food businesses in England are likely to get a low FHRS
-hygiene rating, using only stuff you'd actually know before an inspection
-happens — business type, location, how long since the last check, and how
-deprived the area is.
+hygiene rating, using only things you'd know before an inspection happens
+(business type, location, time since last check, area deprivation).
 
-Needs the two files in data/. Prints metrics for three models and saves
-three plots.
+Needs data/FHRS_All_en-GB.csv.gz and data/File_10_IoD2025_...xlsx.
+Prints metrics for three models and saves three plots.
 """
 
 import warnings
@@ -33,17 +32,17 @@ FHRS_CSV = "data/FHRS_All_en-GB.csv.gz"
 IMD_XLSX = "data/File_10_IoD2025_Local_Authority_District_Summaries.xlsx"
 SEED = 42
 TEST_SIZE = 0.25
-YEARS = 5  # my supervisor reckoned older data wouldn't be representative
+YEARS = 5  # supervisor said older data probably isn't representative
 
 
 def load_data():
-    """Loads the raw FHRS export and cuts it down to English records only.
-    The file has no country column, which is why I need the lookup table."""
+    """Read the raw FHRS export and keep only English FHRS-scheme records.
+    (The raw file has no country column, hence the lookup table.)"""
     df = pd.read_csv(FHRS_CSV, dtype=str, low_memory=False)
     england = {la for las in ENGLAND_REGIONS.values() for la in las}
     df = df[(df["SchemeType"] == "FHRS") & df["LocalAuthorityName"].isin(england)].copy()
 
-    # keep actual numeric ratings — throws out "Awaiting Inspection", "Exempt" etc
+    # numeric ratings only — drops "Awaiting Inspection", "Exempt" etc.
     df = df[df["RatingValue"].isin(list("012345"))]
     df["RatingValue"] = df["RatingValue"].astype(int)
     df["RatingDate"] = pd.to_datetime(df["RatingDate"], errors="coerce")
@@ -51,14 +50,13 @@ def load_data():
     latest = df["RatingDate"].max()
     df = df[df["RatingDate"] >= latest - pd.DateOffset(years=YEARS)]
 
-    # if the same name + postcode shows up twice it's a duplicate listing,
-    # so I just keep whichever one is newer
+    # same name + postcode twice = duplicate listing, keep the newer one
     df = df.sort_values("RatingDate").drop_duplicates(["BusinessName", "PostCode"], keep="last")
 
     df["HighRisk"] = (df["RatingValue"] <= 3).astype(int)
     df["DaysSinceInspection"] = (latest - df["RatingDate"]).dt.days
 
-    # bolt on the deprivation scores
+    # bolt on local-authority deprivation scores
     imd = pd.read_excel(IMD_XLSX, sheet_name="IMD").rename(columns={
         "Local Authority District name (2024)": "LocalAuthorityName",
         "IMD - Average score ": "IMD_DeprivationScore",
@@ -67,16 +65,14 @@ def load_data():
     imd["LocalAuthorityName"] = imd["LocalAuthorityName"].replace(IMD_NAME_FIX)
 
     df = df.merge(imd, on="LocalAuthorityName", how="left")
-    # a couple of port health authorities aren't normal councils and have no
-    # IMD score, so they just get dropped
+    # a couple of port-health authorities have no normal IMD record — drop them
     return df.dropna(subset=["IMD_DeprivationScore"])
 
 
 def build_features(df):
-    """Worth flagging: I'm deliberately not using Hygiene / Structural /
-    ConfidenceInManagement. Those three are what the final rating gets
-    calculated from, so putting them in would just be handing the model
-    the answer."""
+    """Note: Hygiene / Structural / ConfidenceInManagement are deliberately
+    left out. Those three are what the final rating is calculated from, so
+    feeding them in would just let the model read the answer off the data."""
     regions = {la: r for r, las in ENGLAND_REGIONS.items() for la in las}
     df["Region"] = df["LocalAuthorityName"].map(regions).fillna("Unknown")
 
@@ -86,8 +82,7 @@ def build_features(df):
     df["Latitude"] = df["Latitude"].fillna(df["Latitude"].median())
     df["Longitude"] = df["Longitude"].fillna(df["Longitude"].median())
 
-    # too many business types to one-hot them all, so the rare ones get
-    # lumped into a single bucket
+    # lump the rare business types together
     freq = df["BusinessType"].value_counts(normalize=True)
     rare = freq[freq < 0.005].index
     df["BusinessTypeGrp"] = df["BusinessType"].where(~df["BusinessType"].isin(rare), "Other/Rare")
@@ -97,12 +92,28 @@ def build_features(df):
     X = pd.get_dummies(df[cols], columns=["BusinessTypeGrp", "Region"])
     return X, df["HighRisk"]
 
+
+def report(name, y_true, prob, threshold=0.5):
+    pred = (prob >= threshold).astype(int)
+    print(f"{name} (threshold={threshold:.3f}): AUC={roc_auc_score(y_true, prob):.3f} "
+          f"Precision={precision_score(y_true, pred):.3f} "
+          f"Recall={recall_score(y_true, pred):.3f} F1={f1_score(y_true, pred):.3f}")
+    print(f"  [[TN FP][FN TP]] = {confusion_matrix(y_true, pred).tolist()}")
+
+
+def train_models(X, y):
+    X_tr, X_te, y_tr, y_te = train_test_split(
+        X, y, test_size=TEST_SIZE, random_state=SEED, stratify=y)
+
+    # only ~9% are high-risk, so balance the training set — test set is left
+    # alone so the metrics still reflect the real class distribution
+    X_tr, y_tr = SMOTE(random_state=SEED).fit_resample(X_tr, y_tr)
+
     scaler = StandardScaler().fit(X_tr)
     models = [
-        # (name, model, does it need scaled features)
+        # (name, model, needs_scaling)
         ("Logistic Regression", LogisticRegression(max_iter=1000, random_state=SEED), True),
-        # tried 300 trees with no depth limit here first — took forever,
-        # capping depth at 20 gets it done in a couple minutes
+        # 300 trees with unlimited depth was far too slow on this much data
         ("Random Forest", RandomForestClassifier(n_estimators=150, max_depth=20,
                                                  min_samples_leaf=5, random_state=SEED, n_jobs=-1), False),
         ("XGBoost", xgb.XGBClassifier(n_estimators=300, max_depth=6, learning_rate=0.1,
@@ -117,9 +128,8 @@ def build_features(df):
         fitted[name] = model
         report(name, y_te, probs[name])
 
-    # Youden's J just finds the point on the ROC curve with the best
-    # TPR/FPR trade-off — went with this specifically because it's what
-    # Allen et al. (2019) and Oldroyd et al. (2021) used too
+    # Youden's J = the ROC point with the best TPR/FPR trade-off. Same method
+    # Allen et al. (2019) and Oldroyd et al. (2021) used, so results compare.
     fpr, tpr, cuts = roc_curve(y_te, probs["XGBoost"])
     best = cuts[np.argmax(tpr - fpr)]
     report("XGBoost (Youden's J)", y_te, probs["XGBoost"], threshold=best)
