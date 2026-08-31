@@ -45,7 +45,7 @@ I used SHAP to explain the predictions rather than just spit out a risk score. T
 
 I've already bundled the data in `data/`, so:
 
-I ran this on Python 3.10 — didn't try anything newer, but heads up: really new Python versions (3.13+) sometimes trip up on packaging with some of these libraries, so I'd stick to 3.9-3.12 if you're setting up from scratch.
+I ran this on Python 3.10 and Python 3.13. I didn't try other Python versions, so I would first recommend running them with these two versions.
 
 ```bash
 pip install -r requirements.txt
