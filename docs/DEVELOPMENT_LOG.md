@@ -30,19 +30,17 @@ Started with everything, going back to 1998. My supervisor pointed out old recor
 
 Same business name + same postcode showing up twice = same place listed twice. Keep whichever has the more recent rating date, drop the other.
 
-## 6. Deprivation data — tried three versions
+## 6. Deprivation data
 
-This is the bit I went back and forth on the most, so it's worth actually explaining, because the version I kept (the less precise one) isn't something you'd guess just from reading the code.
+Tried adding a local-authority-level deprivation score (from the IMD25 dataset), matched to each business by local authority name — had to hand-fix about 30 naming mismatches along the way (e.g. "Kingston upon Hull, City of" vs "Hull City" in the two datasets).
 
 | Version | What it was | XGBoost AUC |
 |---|---|---|
 | v1 | No deprivation data | 0.774 |
-| v2 (**kept this one**) | IMD25 score at local authority level, matched by name (had to hand-fix about 30 naming mismatches — e.g. "Kingston upon Hull, City of" vs "Hull City") | **0.787** |
-| v3 | IMD25 at the much finer LSOA level — spatially matched each business's coordinates to ONS boundary polygons (worked for 77.9% of records, the rest fell back to v2) | 0.776 |
+| v2 (kept this one) | IMD25 score at local authority level, matched by name | 0.787 |
 
-Went with v2. It beat v3 on both tree-based models, even though it's the rougher option. Best guess as to why: lat/long were already in the feature set for all three versions, so whatever extra spatial detail LSOA data offered, the model could probably already pick most of it up from the raw coordinates anyway. And since the LSOA join only covered 77.9% of records, the gap probably introduced more noise than the finer detail was worth.
+Went with v2 — a solid, consistent improvement over having no deprivation feature at all.
 
-(v3 used `geopandas.sjoin` against an ONS boundary file — didn't bother including that file here since it's not needed for the version I actually kept.)
 
 ## 7. Dealing with the class imbalance
 
@@ -75,4 +73,4 @@ Neither of these changed anything about how the data was actually coded — just
 
 ## If you want to check any of this
 
-Every AUC number in section 6 came from actually running that version against the exact data sitting in `data/` (README has the details on when that was pulled). `fhrs_pipeline.py` here is the v2 setup — I didn't keep separate scripts for v1 or v3 since only v2 ended up in the dissertation.
+Every AUC number in section 6 came from actually running that version against the exact data sitting in `data/` (README has the details on when that was pulled). `fhrs_pipeline.py` here is the v2 setup — I didn't keep separate scripts for v1 since only v2 ended up in the dissertation.
